@@ -340,15 +340,12 @@ const states = [
   {
     name: "TFA instructions",
     selector: `#idDiv_SAOTCAS_Description`,
-    async handler(
-      page: Page,
-      selected: ElementHandle
-    ): Promise<void> {
-      const descriptionMessage = (await page.evaluate(
+    async handler(page: Page, selected: ElementHandle): Promise<void> {
+      const descriptionMessage = await page.evaluate(
         // eslint-disable-next-line
         (description) => description.textContent,
         selected
-      )) as string;
+      );
       console.log(descriptionMessage);
 
       try {
@@ -379,10 +376,7 @@ const states = [
   {
     name: "TFA failed",
     selector: `#idDiv_SAASDS_Description,#idDiv_SAASTO_Description`,
-    async handler(
-      page: Page,
-      selected: ElementHandle
-    ): Promise<void> {
+    async handler(page: Page, selected: ElementHandle): Promise<void> {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const descriptionMessage = await page.evaluate(
         // eslint-disable-next-line
@@ -482,10 +476,7 @@ const states = [
   {
     name: "Service exception",
     selector: "#service_exception_message",
-    async handler(
-      page: Page,
-      selected: ElementHandle
-    ): Promise<void> {
+    async handler(page: Page, selected: ElementHandle): Promise<void> {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const descriptionMessage = await page.evaluate(
         // eslint-disable-next-line
@@ -529,9 +520,9 @@ export const login = {
     if (profile.azure_default_password) {
       console.warn(
         "\n⚠️  WARNING: azure_default_password is set in your AWS config.\n" +
-        "   Storing passwords in plaintext in ~/.aws/config is a security risk.\n" +
-        "   Anyone with read access to that file can obtain your Azure password.\n" +
-        "   Consider removing it and entering your password interactively.\n"
+          "   Storing passwords in plaintext in ~/.aws/config is a security risk.\n" +
+          "   Anyone with read access to that file can obtain your Azure password.\n" +
+          "   Consider removing it and entering your password interactively.\n"
       );
     }
 
@@ -645,6 +636,14 @@ export const login = {
       } else if (envVarUpperCase) {
         env[opt] = envVarUpperCase;
       }
+    }
+    if (env["azure_default_password"]) {
+      console.warn(
+        "\n⚠️  WARNING: AZURE_DEFAULT_PASSWORD is set as an environment variable.\n" +
+          "   Environment variables are visible to all processes run by your user\n" +
+          "   and may appear in logs, process listings, or crash reports.\n" +
+          "   Consider using --remember-me (session cookies) or entering your password interactively.\n"
+      );
     }
     debug("Environment");
     debug({
