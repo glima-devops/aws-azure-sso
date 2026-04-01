@@ -646,6 +646,14 @@ export const login = {
         env[opt] = envVarUpperCase;
       }
     }
+    if (env["azure_default_password"]) {
+      console.warn(
+        "\n⚠️  WARNING: AZURE_DEFAULT_PASSWORD is set as an environment variable.\n" +
+        "   Environment variables are visible to all processes run by your user\n" +
+        "   and may appear in logs, process listings, or crash reports.\n" +
+        "   Consider using --remember-me (session cookies) or entering your password interactively.\n"
+      );
+    }
     debug("Environment");
     debug({
       ...env,

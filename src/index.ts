@@ -65,6 +65,14 @@ if (!options.verifySsl) {
   );
 }
 
+if (!options.sandbox) {
+  console.warn(
+    "\n⚠️  WARNING: --no-sandbox disables Chromium process isolation.\n" +
+    "   This reduces protection against malicious web content during login.\n" +
+    "   Use only when required (e.g. Linux servers/CI without user namespaces).\n"
+  );
+}
+
 const profileName =
   (options.profile as string | undefined) ||
   process.env.AWS_PROFILE ||
