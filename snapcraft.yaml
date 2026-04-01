@@ -1,21 +1,21 @@
-name: aws-azure-login
+name: aws-azure-sso
 version: git
 summary: Use Azure AD SSO to log into the AWS via CLI.
 description: |
-  To configure the aws-azure-login client run:-
-  $ aws-azure-login --configure
-  Once aws-azure-login is configured, you can log in. For the default profile, just run:-
-  $ aws-azure-login
+  To configure the aws-azure-sso client run:-
+  $ aws-azure-sso --configure
+  Once aws-azure-sso is configured, you can log in. For the default profile, just run:-
+  $ aws-azure-sso
 base: core18
 confinement: strict
 
 parts:
-  aws-azure-login:
+  aws-azure-sso:
     plugin: nodejs
     nodejs-version: "14.15.4"
     nodejs-package-manager: yarn
     source: .
 
 apps:
-  aws-azure-login:
-    command: aws-azure-login
+  aws-azure-sso:
+    command: aws-azure-sso
