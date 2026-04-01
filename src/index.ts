@@ -60,16 +60,16 @@ const options = program.opts();
 if (!options.verifySsl) {
   console.warn(
     "\n⚠️  WARNING: --no-verify-ssl disables TLS certificate verification for AWS STS calls.\n" +
-    "   This makes the connection vulnerable to Man-in-the-Middle (MITM) attacks.\n" +
-    "   Credentials obtained may be intercepted. Use only in isolated/trusted networks.\n"
+      "   This makes the connection vulnerable to Man-in-the-Middle (MITM) attacks.\n" +
+      "   Credentials obtained may be intercepted. Use only in isolated/trusted networks.\n"
   );
 }
 
 if (!options.sandbox) {
   console.warn(
     "\n⚠️  WARNING: --no-sandbox disables Chromium process isolation.\n" +
-    "   This reduces protection against malicious web content during login.\n" +
-    "   Use only when required (e.g. Linux servers/CI without user namespaces).\n"
+      "   This reduces protection against malicious web content during login.\n" +
+      "   Use only when required (e.g. Linux servers/CI without user namespaces).\n"
   );
 }
 
