@@ -11,7 +11,7 @@ Installation can be done in any of the following platform - Windows, Linux, Dock
 
 ### Windows
 
-Install [Node.js](https://nodejs.org/) v12 or higher. Then install aws-azure-sso with npm:
+Install [Node.js](https://nodejs.org/) v18 or higher. Then install aws-azure-sso with npm:
 
     npm install -g aws-azure-sso
 
@@ -19,7 +19,7 @@ This fork uses `puppeteer-core` and does **not** download a bundled Chromium. Yo
 
 ### Linux
 
-In Linux you can either install for all users or just the current user. In either case, you must first install [Node.js](https://nodejs.org/) v12 or higher and any [puppeteer dependencies](https://github.com/GoogleChrome/puppeteer/blob/master/docs/troubleshooting.md#chrome-headless-doesnt-launch). Then follow the appropriate instructions.
+In Linux you can either install for all users or just the current user. In either case, you must first install [Node.js](https://nodejs.org/) v18 or higher and any [puppeteer dependencies](https://github.com/GoogleChrome/puppeteer/blob/master/docs/troubleshooting.md#chrome-headless-doesnt-launch). Then follow the appropriate instructions.
 
 #### Option A: Install for All Users
 
@@ -158,6 +158,8 @@ _Note:_ on Linux you will likely need to disable the Puppeteer sandbox or Chrome
 
     aws-azure-sso --no-sandbox
 
+> **Security:** `--no-sandbox` removes Chromium's process isolation. Only use it when required (typically Linux servers/CI without a user namespace). On desktop Linux, try running without it first.
+
 ### Behind corporate proxy
 
 If behind corporate proxy, then just set https_proxy env variable.
@@ -208,13 +210,17 @@ The path is validated at startup: it must be an absolute path to an existing fil
 
 ### Protecting ~/.aws/config and ~/.aws/credentials
 
-AWS credentials and session tokens are stored in plaintext by the AWS CLI convention. Restrict access to these files:
+AWS credentials and session tokens are stored in plaintext by the AWS CLI convention.
+
+**On Linux and macOS**, aws-azure-sso automatically writes `~/.aws/config` and `~/.aws/credentials` with mode `0600` (owner read/write only) since v3.6.6. No manual `chmod` needed.
+
+If you have existing files created by an older version or by the AWS CLI itself, restrict them manually:
 
 ```bash
 chmod 600 ~/.aws/config ~/.aws/credentials
 ```
 
-On Windows, ensure the files are not synced to shared locations (OneDrive, network drives) without encryption.
+**On Windows**, ensure the files are not synced to shared locations (OneDrive, network drives) without encryption.
 
 ## Getting Your Tenant ID and App ID URI
 
