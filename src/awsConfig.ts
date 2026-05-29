@@ -21,6 +21,8 @@ export interface ProfileConfig {
   azure_default_duration_hours: string;
   region: string;
   azure_default_remember_me: boolean;
+  azure_browser?: "auto" | "chrome" | "edge";
+  azure_browser_profile?: string;
   [key: string]: unknown;
 }
 

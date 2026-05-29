@@ -21,30 +21,46 @@ import path from "path";
 
 const debug = _debug("aws-azure-login");
 
-const KNOWN_CHROME_PATHS: Record<string, string[]> = {
+export type BrowserChoice = "auto" | "chrome" | "edge";
+
+const CHROME_PATHS: Record<string, string[]> = {
   win32: [
     "C:/Program Files/Google/Chrome/Application/chrome.exe",
     "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
     `${process.env.LOCALAPPDATA}/Google/Chrome/Application/chrome.exe`,
-    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   ],
   darwin: [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
   ],
   linux: [
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
-    "/usr/bin/microsoft-edge",
     "/snap/bin/chromium",
   ],
 };
 
-function resolveChromiumPath(): string {
+const EDGE_PATHS: Record<string, string[]> = {
+  win32: [
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+  ],
+  darwin: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+  linux: ["/usr/bin/microsoft-edge"],
+};
+
+function candidatesFor(browser: BrowserChoice): string[] {
+  const platform = process.platform;
+  const chrome = CHROME_PATHS[platform] ?? [];
+  const edge = EDGE_PATHS[platform] ?? [];
+  if (browser === "chrome") return chrome;
+  if (browser === "edge") return edge;
+  return [...edge, ...chrome];
+}
+
+function resolveChromiumPath(browser: BrowserChoice = "auto"): string {
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
   if (envPath) {
@@ -64,16 +80,39 @@ function resolveChromiumPath(): string {
     return resolved;
   }
 
-  const candidates = KNOWN_CHROME_PATHS[process.platform] ?? [];
+  const candidates = candidatesFor(browser);
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
 
+  const label =
+    browser === "chrome"
+      ? "Chrome/Chromium"
+      : browser === "edge"
+      ? "Microsoft Edge"
+      : "Chrome/Chromium/Edge";
   throw new CLIError(
-    "Could not find a browser to launch. Please set PUPPETEER_EXECUTABLE_PATH to your Chrome/Chromium/Edge executable."
+    `Could not find ${label} installed. Install it or set PUPPETEER_EXECUTABLE_PATH to a valid browser executable.`
   );
+}
+
+function resolveBrowserProfilePath(input: string): string {
+  const resolved = path.resolve(input);
+  const isAbsolute = path.isAbsolute(resolved);
+  const staysInPlace = resolved === path.normalize(resolved);
+  if (!isAbsolute || !staysInPlace) {
+    throw new CLIError(
+      `Browser profile path "${input}" is not a valid absolute path.`
+    );
+  }
+  if (!fs.existsSync(resolved)) {
+    throw new CLIError(
+      `Browser profile path "${resolved}" does not exist. Pass the browser's User Data directory (e.g. on Windows: %LOCALAPPDATA%\\Microsoft\\Edge\\User Data).`
+    );
+  }
+  return resolved;
 }
 
 const WIDTH = 425;
@@ -499,7 +538,9 @@ export const login = {
     awsNoVerifySsl: boolean,
     enableChromeSeamlessSso: boolean,
     noDisableExtensions: boolean,
-    disableGpu: boolean
+    disableGpu: boolean,
+    browser: BrowserChoice = "auto",
+    browserProfile?: string
   ): Promise<void> {
     let headless, cliProxy;
     if (mode === "cli") {
@@ -541,6 +582,13 @@ export const login = {
       profile.azure_tenant_id,
       assertionConsumerServiceURL
     );
+    const effectiveBrowser: BrowserChoice =
+      browser !== "auto"
+        ? browser
+        : (profile.azure_browser as BrowserChoice | undefined) ?? "auto";
+    const effectiveBrowserProfile =
+      browserProfile ?? profile.azure_browser_profile;
+
     const samlResponse = await this._performLoginAsync(
       loginUrl,
       headless,
@@ -553,7 +601,9 @@ export const login = {
       enableChromeSeamlessSso,
       profile.azure_default_remember_me,
       noDisableExtensions,
-      disableGpu
+      disableGpu,
+      effectiveBrowser,
+      effectiveBrowserProfile
     );
     const roles = this._parseRolesFromSamlResponse(samlResponse);
     const { role, durationHours } = await this._askUserForRoleAndDurationAsync(
@@ -582,7 +632,9 @@ export const login = {
     enableChromeSeamlessSso: boolean,
     forceRefresh: boolean,
     noDisableExtensions: boolean,
-    disableGpu: boolean
+    disableGpu: boolean,
+    browser: BrowserChoice = "auto",
+    browserProfile?: string
   ): Promise<void> {
     const profiles = await awsConfig.getAllProfileNames();
 
@@ -610,7 +662,9 @@ export const login = {
         awsNoVerifySsl,
         enableChromeSeamlessSso,
         noDisableExtensions,
-        disableGpu
+        disableGpu,
+        browser,
+        browserProfile
       );
     }
   },
@@ -737,6 +791,8 @@ export const login = {
    * @param {bool} [rememberMe] - Enable remembering the session
    * @param {bool} [noDisableExtensions] - True to prevent Puppeteer from disabling Chromium extensions
    * @param {bool} [disableGpu] - Disables GPU Acceleration
+   * @param {BrowserChoice} [browserChoice] - Preferred browser to launch ("auto", "chrome", "edge")
+   * @param {string} [browserProfilePath] - Path to the browser's User Data directory to reuse the user's real session
    * @returns {Promise.<string>} The SAML response.
    * @private
    */
@@ -752,7 +808,9 @@ export const login = {
     enableChromeSeamlessSso: boolean,
     rememberMe: boolean,
     noDisableExtensions: boolean,
-    disableGpu: boolean
+    disableGpu: boolean,
+    browserChoice: BrowserChoice = "auto",
+    browserProfilePath?: string
   ): Promise<string> {
     debug("Loading login page in Chrome");
 
@@ -770,9 +828,20 @@ export const login = {
           `--auth-server-whitelist=${AZURE_AD_SSO}`,
           `--auth-negotiate-delegate-whitelist=${AZURE_AD_SSO}`
         );
-      if (rememberMe) {
+      let userDataDir: string | undefined;
+      if (browserProfilePath) {
+        userDataDir = resolveBrowserProfilePath(browserProfilePath);
+        console.warn(
+          "\n⚠️  Using your real browser profile via --browser-profile.\n" +
+            `   Make sure the browser is fully closed (profile lock).\n` +
+            `   Path: ${userDataDir}\n`
+        );
+      } else if (rememberMe) {
         await mkdirp(paths.chromium);
-        args.push(`--user-data-dir=${paths.chromium}`);
+        userDataDir = paths.chromium;
+      }
+      if (userDataDir) {
+        args.push(`--user-data-dir=${userDataDir}`);
       }
 
       if (process.env.https_proxy) {
@@ -787,8 +856,11 @@ export const login = {
         args.push("--disable-gpu");
       }
 
+      const executablePath = resolveChromiumPath(browserChoice);
+      debug(`Launching browser: ${executablePath}`);
+
       browser = await puppeteer.launch({
-        executablePath: resolveChromiumPath(),
+        executablePath,
         headless,
         args,
         ignoreDefaultArgs,

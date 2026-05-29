@@ -15,7 +15,7 @@ Install [Node.js](https://nodejs.org/) v20 or higher. Then install aws-azure-sso
 
     npm install -g aws-azure-sso
 
-This fork uses `puppeteer-core` and does **not** download a bundled Chromium. You must have Google Chrome, Chromium, or Microsoft Edge already installed. The tool auto-detects the browser from known paths. If it cannot find one, set the `PUPPETEER_EXECUTABLE_PATH` environment variable to your browser executable.
+This fork uses `puppeteer-core` and does **not** download a bundled Chromium. You must have Microsoft Edge, Google Chrome, or Chromium already installed. The tool auto-detects the browser from known paths — **Edge first** (since this tool is for Azure AD SSO), Chrome as fallback. If it cannot find one, set the `PUPPETEER_EXECUTABLE_PATH` environment variable to your browser executable.
 
 ### Linux
 
@@ -188,6 +188,7 @@ To skip unnecessary calls, the credentials are only getting refreshed if the tim
 Both locations store the password in plaintext. Anyone with read access to the file or the process environment can retrieve it. The tool will warn you at runtime when a stored password is detected.
 
 Safer alternatives that avoid storing passwords:
+
 - Use `--remember-me` (stores session cookies instead of a password — see [Staying logged in](#staying-logged-in-skip-usernamepassword-for-future-logins))
 - Enter the password interactively each time
 - Use a secrets manager (e.g. `pass`, macOS Keychain, Windows Credential Manager) and inject the value only at runtime
@@ -198,6 +199,43 @@ The `--no-verify-ssl` flag disables TLS certificate verification for calls to th
 
 **Only use this flag on isolated, fully trusted networks where you control all traffic.** The tool prints a warning when this flag is active.
 
+### Choosing the browser (`--browser`, `--browser-profile`)
+
+By default the tool auto-detects an installed browser (**Edge first** — since this tool targets Azure AD SSO — with Chrome as fallback). You can pick one explicitly:
+
+```bash
+# Prefer Microsoft Edge
+aws-azure-sso --browser edge
+
+# Prefer Google Chrome
+aws-azure-sso --browser chrome
+```
+
+**Why Edge?** On a Windows machine joined to Azure AD (or AAD-registered), Microsoft Edge can sign you in to Azure SSO automatically via the **Primary Refresh Token (PRT)** issued by the Windows Web Account Manager — no password, no MFA prompt, no cookies needed. If you have already signed into any Microsoft app on the machine (Teams, Outlook, Office, Edge itself), `aws-azure-sso --browser edge` typically completes login with a single click. Chrome can match this behavior only with the [Microsoft Single Sign-On extension](https://chromewebstore.google.com/detail/microsoft-single-sign-on/ppnbnpeolgkicgegkbkbjmhlideopiji) installed and `--enable-chrome-seamless-sso`.
+
+You can persist your choice per profile (it is asked by `--configure` and stored as `azure_browser` in `~/.aws/config`).
+
+#### Reusing an existing browser session (`--browser-profile`)
+
+If you are on a machine that is **not** Azure AD-joined but you are already signed in to your Microsoft account inside Edge/Chrome, you can reuse that session by pointing the tool at your browser's User Data directory:
+
+```bash
+# Windows (PowerShell)
+aws-azure-sso --browser edge --browser-profile "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+
+# macOS
+aws-azure-sso --browser edge --browser-profile "$HOME/Library/Application Support/Microsoft Edge"
+
+# Linux
+aws-azure-sso --browser edge --browser-profile "$HOME/.config/microsoft-edge"
+```
+
+> **The browser must be fully closed** — Edge/Chrome locks the User Data directory while running and the launch will fail otherwise.
+
+> **Security:** this gives `aws-azure-sso` access to all cookies and sessions in that profile. Prefer `--browser edge` on AAD-joined Windows (no profile access needed) when possible.
+
+The value can also be persisted per profile as `azure_browser_profile` via `--configure`.
+
 ### Custom browser path (PUPPETEER_EXECUTABLE_PATH)
 
 This fork uses `puppeteer-core` instead of the bundled Chromium, relying on a browser already installed on your machine. You can override the browser path with:
@@ -206,7 +244,7 @@ This fork uses `puppeteer-core` instead of the bundled Chromium, relying on a br
 export PUPPETEER_EXECUTABLE_PATH="/path/to/chrome"
 ```
 
-The path is validated at startup: it must be an absolute path to an existing file. If it does not exist or is not absolute, the tool exits with a clear error. If the variable is not set, the tool searches known installation paths for Chrome, Chromium, and Edge on Windows, macOS, and Linux.
+The path is validated at startup: it must be an absolute path to an existing file. If it does not exist or is not absolute, the tool exits with a clear error. If the variable is not set, the tool searches known installation paths for Chrome, Chromium, and Edge on Windows, macOS, and Linux (filtered by `--browser` when specified).
 
 ### Protecting ~/.aws/config and ~/.aws/credentials
 

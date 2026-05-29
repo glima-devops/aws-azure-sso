@@ -41,6 +41,22 @@ export async function configureProfileAsync(
       },
     },
     {
+      name: "browser",
+      message:
+        "Preferred browser to launch (auto|chrome|edge). 'edge' enables Azure AD PRT auto-SSO on AAD-joined Windows:",
+      default: (profile && profile.azure_browser) || "auto",
+      validate: (input): boolean | string => {
+        if (["auto", "chrome", "edge"].includes(input as string)) return true;
+        return "Browser must be one of: auto, chrome, edge";
+      },
+    },
+    {
+      name: "browserProfile",
+      message:
+        "Browser User Data directory to reuse an existing session (leave blank to skip):",
+      default: (profile && profile.azure_browser_profile) || "",
+    },
+    {
       name: "defaultRoleArn",
       message: "Default Role ARN (if multiple):",
       default: profile && profile.azure_default_role_arn,
@@ -64,6 +80,11 @@ export async function configureProfileAsync(
 
   const answers = await inquirer.prompt(questions);
 
+  const browserAnswer = (answers.browser as string) || "auto";
+  const browserProfileAnswer = (
+    (answers.browserProfile as string) || ""
+  ).trim();
+
   await awsConfig.setProfileConfigValuesAsync(profileName, {
     azure_tenant_id: answers.tenantId as string,
     azure_app_id_uri: answers.appIdUri as string,
@@ -71,6 +92,8 @@ export async function configureProfileAsync(
     azure_default_role_arn: answers.defaultRoleArn as string,
     azure_default_duration_hours: answers.defaultDurationHours as string,
     azure_default_remember_me: (answers.rememberMe as string) === "true",
+    azure_browser: browserAnswer as "auto" | "chrome" | "edge",
+    azure_browser_profile: browserProfileAnswer || undefined,
     region: answers.region as string,
   });
 
