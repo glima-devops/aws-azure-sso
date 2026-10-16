@@ -19,6 +19,7 @@ import { NodeHttpHandler } from "@smithy/node-http-handler";
 import fs from "fs";
 import path from "path";
 import os from "os";
+import { spawn } from "child_process";
 
 const debug = _debug("aws-azure-login");
 
@@ -114,6 +115,67 @@ function resolveBrowserProfilePath(input: string): string {
     );
   }
   return resolved;
+}
+
+const SPAWN_CONNECT_TIMEOUT = 30 * 1000;
+
+/**
+ * Start the browser ourselves and attach over its DevTools port.
+ *
+ * puppeteer.launch() fails on some Windows installs of Edge: msedge.exe
+ * detaches and exits 0 straight away, so puppeteer declares the launch failed
+ * ("Failed to launch the browser process: Code: 0") even though a working
+ * browser did come up and wrote its port to DevToolsActivePort. Spawning
+ * detached and connecting to that port sidesteps the child-process check.
+ */
+async function spawnAndConnectAsync(
+  executablePath: string,
+  headless: boolean,
+  args: string[],
+  userDataDir: string
+): Promise<Browser> {
+  const portFile = path.join(userDataDir, "DevToolsActivePort");
+  try {
+    fs.rmSync(portFile, { force: true });
+  } catch (err) {
+    debug(
+      `Could not clear a stale DevToolsActivePort: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`
+    );
+  }
+
+  const spawnArgs = [
+    ...args,
+    "--remote-debugging-port=0",
+    "--no-first-run",
+    "--no-default-browser-check",
+  ];
+  if (headless) spawnArgs.push("--headless=new", "about:blank");
+
+  debug(`Spawning browser detached: ${executablePath}`);
+  const child = spawn(executablePath, spawnArgs, {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+
+  for (let waited = 0; waited < SPAWN_CONNECT_TIMEOUT; waited += 250) {
+    if (fs.existsSync(portFile)) {
+      const port = fs.readFileSync(portFile, "utf8").split("\n")[0].trim();
+      if (port) {
+        debug(`Browser advertised DevTools port ${port}`);
+        return await puppeteer.connect({
+          browserURL: `http://127.0.0.1:${port}`,
+        });
+      }
+    }
+    await Bluebird.delay(250);
+  }
+
+  throw new CLIError(
+    `The browser at ${executablePath} started but never advertised a DevTools port. If it is already open, close it completely (including background processes) and try again.`
+  );
 }
 
 const WIDTH = 425;
@@ -816,6 +878,7 @@ export const login = {
     debug("Loading login page in Chrome");
 
     let browser: Browser | undefined;
+    let tempUserDataDir: string | undefined;
 
     try {
       const args = headless
@@ -860,12 +923,39 @@ export const login = {
       const executablePath = resolveChromiumPath(browserChoice);
       debug(`Launching browser: ${executablePath}`);
 
-      browser = await puppeteer.launch({
-        executablePath,
-        headless,
-        args,
-        ignoreDefaultArgs,
-      });
+      try {
+        browser = await puppeteer.launch({
+          executablePath,
+          headless,
+          args,
+          ignoreDefaultArgs,
+        });
+      } catch (err) {
+        debug(
+          `puppeteer.launch failed: ${
+            err instanceof Error ? err.message : "unknown error"
+          }`
+        );
+
+        let attachDir = userDataDir;
+        if (!attachDir) {
+          attachDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "aws-azure-login-")
+          );
+          tempUserDataDir = attachDir;
+          args.push(`--user-data-dir=${attachDir}`);
+        }
+
+        console.warn(
+          "\n⚠️  Could not start the browser the usual way; attaching over its DevTools port instead.\n"
+        );
+        browser = await spawnAndConnectAsync(
+          executablePath,
+          headless,
+          args,
+          attachDir
+        );
+      }
 
       // Wait for a bit as sometimes the browser isn't ready.
       await Bluebird.delay(200);
@@ -1031,6 +1121,28 @@ export const login = {
     } finally {
       if (browser) {
         await browser.close();
+      }
+      if (tempUserDataDir) {
+        // browser.close() returns before the process has fully released the
+        // profile, so the first unlink usually fails with EPERM on Windows.
+        // The directory holds session cookies, so it is worth retrying.
+        let lastErr: unknown;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            fs.rmSync(tempUserDataDir, { recursive: true, force: true });
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            await Bluebird.delay(500);
+          }
+        }
+        if (lastErr) {
+          console.warn(
+            `\n⚠️  Could not remove the temporary browser profile at ${tempUserDataDir}.\n` +
+              "   It may still hold session cookies — delete it when convenient.\n"
+          );
+        }
       }
     }
   },

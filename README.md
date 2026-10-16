@@ -236,6 +236,28 @@ aws-azure-sso --browser edge --browser-profile "$HOME/.config/microsoft-edge"
 
 The value can also be persisted per profile as `azure_browser_profile` via `--configure`.
 
+### If the browser fails to start
+
+On some Windows installs of Edge, `msedge.exe` detaches and exits immediately,
+and Puppeteer reports:
+
+```
+Failed to launch the browser process:  Code: 0
+```
+
+A working browser actually did come up — Puppeteer just gave up on the child
+process it spawned. The tool detects this and automatically falls back to
+starting the browser detached and attaching over its DevTools port, printing:
+
+```
+⚠️  Could not start the browser the usual way; attaching over its DevTools port instead.
+```
+
+This is handled for you and the login proceeds normally. If the fallback also
+fails, close the browser completely — including background processes, which on
+Windows survive closing every window (`Get-Process msedge | Stop-Process`) —
+and try again.
+
 ### Custom browser path (PUPPETEER_EXECUTABLE_PATH)
 
 This fork uses `puppeteer-core` instead of the bundled Chromium, relying on a browser already installed on your machine. You can override the browser path with:
