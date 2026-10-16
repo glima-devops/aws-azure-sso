@@ -11,11 +11,22 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # puppeteer-core, uuid and proxy-agent are all ESM-only, so the CLI
+        # needs a Node that can require() an ES module. 20.19 is the oldest
+        # release that can; the matrix is here to keep that honest.
+        node-version: [20, 22, 24]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: ${{ matrix.node-version }}
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # Lint and tsc never load the dependencies, so only actually starting the
+      # CLI catches an ERR_REQUIRE_ESM or a broken import.
+      - name: Smoke test the built CLI
+        run: node lib/index.js --help

@@ -2,21 +2,21 @@
 
 ## Get started
 
-This project is written in TypeScript and is using prettier and eslint for code formatting. You need node v20 or newer.
+This project is written in TypeScript and is using prettier and eslint for code formatting. You need node v22 or newer (v20.19 is the bare minimum: the ESM-only dependencies require a Node that can require() an ES module).
 
-1. Install node v20. I recommend installing that with nvm: https://github.com/nvm-sh/nvm
-
-```sh
-nvm install 20
-```
-
-2. Make node v20 default
+1. Install node v22. I recommend installing that with nvm: https://github.com/nvm-sh/nvm
 
 ```sh
-nvm alias default 20
+nvm install 22
 ```
 
-3. Open a new terminal and verify node version (should return v20.X.X or newer)
+2. Make node v22 default
+
+```sh
+nvm alias default 22
+```
+
+3. Open a new terminal and verify node version (should return v22.X.X or newer)
 
 ```sh
 node -v

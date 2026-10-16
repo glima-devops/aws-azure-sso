@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # This fork uses puppeteer-core, which never downloads a browser. The image has
 # to provide one itself, along with the Chromium runtime libraries.
