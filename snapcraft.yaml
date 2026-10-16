@@ -6,14 +6,14 @@ description: |
   $ aws-azure-sso --configure
   Once aws-azure-sso is configured, you can log in. For the default profile, just run:-
   $ aws-azure-sso
-base: core18
+base: core22
 confinement: strict
 
 parts:
   aws-azure-sso:
     plugin: nodejs
-    nodejs-version: "14.15.4"
-    nodejs-package-manager: yarn
+    nodejs-version: "20.19.0"
+    nodejs-package-manager: npm
     source: .
 
 apps:
