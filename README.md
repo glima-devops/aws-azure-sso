@@ -27,9 +27,7 @@ Install aws-azure-sso globally with npm:
 
     sudo npm install -g aws-azure-sso --unsafe-perm
 
-Puppeteer doesn't install globally with execution permissions for all users so you'll need to modify them:
-
-    sudo chmod -R go+rx $(npm root -g)
+> Older versions needed `sudo chmod -R go+rx $(npm root -g)` here, to make the bundled Chromium executable for all users. This fork ships no browser, so that step is no longer required.
 
 #### Option B: Install Only for Current User
 
@@ -50,7 +48,7 @@ Then install aws-azure-sso:
 
 A Docker image has been built with aws-azure-sso preinstalled. You simply need to run the command with a volume mounted to your AWS configuration directory.
 
-    docker run --rm -it -v ~/.aws:/root/.aws glima-devops/aws-azure-sso
+    docker run --rm -it -v ~/.aws:/home/node/.aws glima-devops/aws-azure-sso
 
 The Docker image is configured with an entrypoint so you can just feed any arguments in at the end.
 
@@ -124,6 +122,8 @@ To avoid having to `<Enter>` through the prompts after setting these environment
 
     aws-azure-sso --no-prompt
 
+> **Behaviour change in v3.7.0.** `--no-prompt` used to be stuck on: a bug in the option definition meant the tool never prompted, whether or not you passed the flag. It now does what it says. If you were relying on the old behaviour without passing the flag — for example in a cron job — add `--no-prompt` explicitly.
+
 Use the `HISTCONTROL` environment variable to avoid storing the password in your bash history (notice the space at the beginning):
 
     $ HISTCONTROL=ignoreboth
@@ -189,7 +189,7 @@ Both locations store the password in plaintext. Anyone with read access to the f
 
 Safer alternatives that avoid storing passwords:
 
-- Use `--remember-me` (stores session cookies instead of a password — see [Staying logged in](#staying-logged-in-skip-usernamepassword-for-future-logins))
+- Turn on "Stay logged in" in `--configure` (stores session cookies instead of a password — see [Staying logged in](#staying-logged-in-skip-usernamepassword-for-future-logins)). There is no `--remember-me` flag; the setting lives in `~/.aws/config` as `azure_default_remember_me`.
 - Enter the password interactively each time
 - Use a secrets manager (e.g. `pass`, macOS Keychain, Windows Credential Manager) and inject the value only at runtime
 
@@ -274,10 +274,10 @@ AWS credentials and session tokens are stored in plaintext by the AWS CLI conven
 
 **On Linux and macOS**, aws-azure-sso automatically writes `~/.aws/config` and `~/.aws/credentials` with mode `0600` (owner read/write only) since v3.6.6. No manual `chmod` needed.
 
-If you have existing files created by an older version or by the AWS CLI itself, restrict them manually:
+Since v3.7.0 the permissions are also re-applied to files that already existed, so a `~/.aws/credentials` left at `0644` by the AWS CLI gets locked down on the next login. (`fs.writeFile`'s `mode` only applies when it creates the file, which is why older versions could not repair an existing one.) To check:
 
 ```bash
-chmod 600 ~/.aws/config ~/.aws/credentials
+ls -l ~/.aws/config ~/.aws/credentials
 ```
 
 **On Windows**, ensure the files are not synced to shared locations (OneDrive, network drives) without encryption.
@@ -298,18 +298,88 @@ Your Azure AD system admin should be able to provide you with your Tenant ID and
 
 ## How It Works
 
-The Azure login page uses JavaScript, which requires a real web browser. To automate this from a command line, aws-azure-sso uses [Puppeteer](https://github.com/GoogleChrome/puppeteer), which automates a real Chromium browser. It loads the Azure login page behind the scenes, populates your username and password (and MFA token), parses the SAML assertion, uses the [AWS STS AssumeRoleWithSAML API](http://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRoleWithSAML.html) to get temporary credentials, and saves these in the CLI credentials file.
+The Azure login page uses JavaScript, which requires a real web browser. To automate this from a command line, aws-azure-sso uses [`puppeteer-core`](https://pptr.dev) to drive a browser **already installed on your machine** (Edge, Chrome or Chromium) — no Chromium is bundled or downloaded. It loads the Azure login page behind the scenes, populates your username and password (and MFA token), parses the SAML assertion, uses the [AWS STS AssumeRoleWithSAML API](http://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRoleWithSAML.html) to get temporary credentials, and saves these in the CLI credentials file.
 
 ## Troubleshooting
 
-The nature of browser automation with Puppeteer means the solution is bit brittle. A minor change on the Microsoft side could break the tool. If something isn't working, you can fall back to GUI mode (above). To debug an issue, you can run in debug mode (--mode debug) to see the GUI while aws-azure-sso tries to populate it. You can also have the tool print out more detail on what it is doing to try to do in order to diagnose. aws-azure-sso uses the [Node debug module](https://www.npmjs.com/package/debug) to print out debug info. Just set the DEBUG environmental variable to 'aws-azure-sso'. On Linux/OS X:
+The nature of browser automation with Puppeteer means the solution is bit brittle. A minor change on the Microsoft side could break the tool. If something isn't working, you can fall back to GUI mode (above). To debug an issue, you can run in debug mode (--mode debug) to see the GUI while aws-azure-sso tries to populate it. You can also have the tool print out more detail on what it is doing to try to do in order to diagnose. aws-azure-sso uses the [Node debug module](https://www.npmjs.com/package/debug) to print out debug info. Just set the DEBUG environmental variable to `aws-azure-login` (the namespace kept its original name through the rename, so it is *not* `aws-azure-sso`). On Linux/OS X:
 
-    DEBUG=aws-azure-sso aws-azure-sso
+    DEBUG=aws-azure-login aws-azure-sso
 
 On Windows:
 
-    set DEBUG=aws-azure-sso
+    set DEBUG=aws-azure-login
     aws-azure-sso
+
+The debug output never contains the SAML assertion or your password. It does include your username and tenant, so skim it before pasting it into an issue.
+
+## Maintaining this fork
+
+For whoever picks this up next, including future you. The traps below are the ones that actually bit, not hypotheticals.
+
+### Ground rules
+
+- **npm only.** `yarn.lock` was deliberately deleted. CI, Docker, snapcraft and CONTRIBUTING all use `npm ci`. Carrying two lockfiles meant the tree CI installed and the tree `npm audit` analysed could drift apart silently.
+- **`lib/` is a build artifact.** It is gitignored and built by CI on release. Never commit it, and remember it is what `bin` points at — a stale `lib/` means your fixes are not in the published package even though they are in `src/`.
+- **Never hand-write a `.d.ts` for a dependency.** A `typings/proxy-agent/index.d.ts` describing the v4 API survived the upgrade to v6, so `tsc` happily validated `proxy(url)` against a package that had replaced that function with a class. Proxy support was broken for months with a green build. If a package's own types do not resolve, fix the resolution, do not fake the types.
+
+### Updating dependencies
+
+```bash
+npm outdated
+npm audit
+npm update                 # semver-compatible
+npm install <pkg>@latest   # for a major, one at a time
+```
+
+Then, every time:
+
+```bash
+npm test          # eslint + prettier
+npm run build     # tsc
+node lib/index.js --help    # smoke test — see below
+```
+
+**Judge reachability before chasing an advisory.** `npm audit` reports the whole tree, not what the code executes. `basic-ftp` is pinned through an `overrides` entry rather than by downgrading `proxy-agent`, because `get-uri` only touches it to fetch `ftp://` PAC files — a path this tool never takes. The fix npm suggested would have reintroduced a crash.
+
+**Watch the Node floor.** `puppeteer-core`, `uuid` and `proxy-agent` are ESM-only and are `require()`d from CommonJS, which needs a Node that supports `require(esm)` — hence `engines.node >= 20.19`. `tsconfig.json` uses `"module": "node20"` so TypeScript models that accurately; it also requires TypeScript >= 5.9. If you drop that setting, module resolution silently stops reading `exports` maps, which is how the proxy bug hid.
+
+### Verifying a change
+
+Lint and `tsc` never load the dependencies, so they cannot catch an `ERR_REQUIRE_ESM`, a broken default import or a renamed export. **Always start the built CLI.** CI does this on Node 20, 22 and 24; do it locally too:
+
+```bash
+npm run build && node lib/index.js --help
+```
+
+Before a release, also drive a real browser — the login loop is the part that breaks:
+
+```bash
+DEBUG=aws-azure-login aws-azure-sso --mode debug --profile <your-profile>
+```
+
+### Releasing
+
+1. Bump `version` in `package.json`.
+2. Push to `main`; the Main workflow runs the matrix.
+3. Tag and push the tag — the Release workflow builds `lib/`, publishes to npm, Docker Hub and the Snap Store.
+
+Secrets used: `NPM_TOKEN`, `DOCKER_USERNAME`, `DOCKER_PASSWORD`, `SNAPCRAFT_STORE_LOGIN`.
+
+> **Known risk:** the Docker publish step uses `elgohr/Publish-Docker-Github-Action@master` — a third-party action with no commit pin, running with those secrets. Pinning it to a specific commit SHA is worth doing.
+
+### Syncing with upstream
+
+`origin` points at the **upstream** project and `sso` at this fork. Pushing this branch to `origin` would target `aws-azure-login/aws-azure-login`, not your own repo.
+
+```bash
+git fetch origin
+git merge origin/main        # or rebase
+npm ci && npm test && npm run build && node lib/index.js --help
+git push sso <branch>
+```
+
+Expect conflicts in `src/login.ts` and `package.json`: this fork diverges there the most (browser selection, the DevTools-port fallback, the security fixes).
 
 ## Support for Other Authentication Providers
 
