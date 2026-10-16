@@ -11,40 +11,58 @@ import querystring from "querystring";
 import _debug from "debug";
 import { CLIError } from "./CLIError";
 import { awsConfig, ProfileConfig } from "./awsConfig";
-import proxy from "proxy-agent";
+import { ProxyAgent } from "proxy-agent";
 import { paths } from "./paths";
 import mkdirp from "mkdirp";
 import { Agent } from "https";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import fs from "fs";
 import path from "path";
+import os from "os";
+import { spawn } from "child_process";
 
 const debug = _debug("aws-azure-login");
 
-const KNOWN_CHROME_PATHS: Record<string, string[]> = {
+export type BrowserChoice = "auto" | "chrome" | "edge";
+
+const CHROME_PATHS: Record<string, string[]> = {
   win32: [
     "C:/Program Files/Google/Chrome/Application/chrome.exe",
     "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
     `${process.env.LOCALAPPDATA}/Google/Chrome/Application/chrome.exe`,
-    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   ],
   darwin: [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
   ],
   linux: [
     "/usr/bin/google-chrome",
     "/usr/bin/google-chrome-stable",
     "/usr/bin/chromium-browser",
     "/usr/bin/chromium",
-    "/usr/bin/microsoft-edge",
     "/snap/bin/chromium",
   ],
 };
 
-function resolveChromiumPath(): string {
+const EDGE_PATHS: Record<string, string[]> = {
+  win32: [
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+  ],
+  darwin: ["/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"],
+  linux: ["/usr/bin/microsoft-edge"],
+};
+
+function candidatesFor(browser: BrowserChoice): string[] {
+  const platform = process.platform;
+  const chrome = CHROME_PATHS[platform] ?? [];
+  const edge = EDGE_PATHS[platform] ?? [];
+  if (browser === "chrome") return chrome;
+  if (browser === "edge") return edge;
+  return [...edge, ...chrome];
+}
+
+function resolveChromiumPath(browser: BrowserChoice = "auto"): string {
   const envPath = process.env.PUPPETEER_EXECUTABLE_PATH;
 
   if (envPath) {
@@ -64,15 +82,99 @@ function resolveChromiumPath(): string {
     return resolved;
   }
 
-  const candidates = KNOWN_CHROME_PATHS[process.platform] ?? [];
+  const candidates = candidatesFor(browser);
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {
       return candidate;
     }
   }
 
+  const label =
+    browser === "chrome"
+      ? "Chrome/Chromium"
+      : browser === "edge"
+      ? "Microsoft Edge"
+      : "Chrome/Chromium/Edge";
   throw new CLIError(
-    "Could not find a browser to launch. Please set PUPPETEER_EXECUTABLE_PATH to your Chrome/Chromium/Edge executable."
+    `Could not find ${label} installed. Install it or set PUPPETEER_EXECUTABLE_PATH to a valid browser executable.`
+  );
+}
+
+function resolveBrowserProfilePath(input: string): string {
+  const resolved = path.resolve(input);
+  const isAbsolute = path.isAbsolute(resolved);
+  const staysInPlace = resolved === path.normalize(resolved);
+  if (!isAbsolute || !staysInPlace) {
+    throw new CLIError(
+      `Browser profile path "${input}" is not a valid absolute path.`
+    );
+  }
+  if (!fs.existsSync(resolved)) {
+    throw new CLIError(
+      `Browser profile path "${resolved}" does not exist. Pass the browser's User Data directory (e.g. on Windows: %LOCALAPPDATA%\\Microsoft\\Edge\\User Data).`
+    );
+  }
+  return resolved;
+}
+
+const SPAWN_CONNECT_TIMEOUT = 30 * 1000;
+
+/**
+ * Start the browser ourselves and attach over its DevTools port.
+ *
+ * puppeteer.launch() fails on some Windows installs of Edge: msedge.exe
+ * detaches and exits 0 straight away, so puppeteer declares the launch failed
+ * ("Failed to launch the browser process: Code: 0") even though a working
+ * browser did come up and wrote its port to DevToolsActivePort. Spawning
+ * detached and connecting to that port sidesteps the child-process check.
+ */
+async function spawnAndConnectAsync(
+  executablePath: string,
+  headless: boolean,
+  args: string[],
+  userDataDir: string
+): Promise<Browser> {
+  const portFile = path.join(userDataDir, "DevToolsActivePort");
+  try {
+    fs.rmSync(portFile, { force: true });
+  } catch (err) {
+    debug(
+      `Could not clear a stale DevToolsActivePort: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`
+    );
+  }
+
+  const spawnArgs = [
+    ...args,
+    "--remote-debugging-port=0",
+    "--no-first-run",
+    "--no-default-browser-check",
+  ];
+  if (headless) spawnArgs.push("--headless=new", "about:blank");
+
+  debug(`Spawning browser detached: ${executablePath}`);
+  const child = spawn(executablePath, spawnArgs, {
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+
+  for (let waited = 0; waited < SPAWN_CONNECT_TIMEOUT; waited += 250) {
+    if (fs.existsSync(portFile)) {
+      const port = fs.readFileSync(portFile, "utf8").split("\n")[0].trim();
+      if (port) {
+        debug(`Browser advertised DevTools port ${port}`);
+        return await puppeteer.connect({
+          browserURL: `http://127.0.0.1:${port}`,
+        });
+      }
+    }
+    await Bluebird.delay(250);
+  }
+
+  throw new CLIError(
+    `The browser at ${executablePath} started but never advertised a DevTools port. If it is already open, close it completely (including background processes) and try again.`
   );
 }
 
@@ -499,7 +601,9 @@ export const login = {
     awsNoVerifySsl: boolean,
     enableChromeSeamlessSso: boolean,
     noDisableExtensions: boolean,
-    disableGpu: boolean
+    disableGpu: boolean,
+    browser: BrowserChoice = "auto",
+    browserProfile?: string
   ): Promise<void> {
     let headless, cliProxy;
     if (mode === "cli") {
@@ -541,6 +645,13 @@ export const login = {
       profile.azure_tenant_id,
       assertionConsumerServiceURL
     );
+    const effectiveBrowser: BrowserChoice =
+      browser !== "auto"
+        ? browser
+        : (profile.azure_browser as BrowserChoice | undefined) ?? "auto";
+    const effectiveBrowserProfile =
+      browserProfile ?? profile.azure_browser_profile;
+
     const samlResponse = await this._performLoginAsync(
       loginUrl,
       headless,
@@ -553,7 +664,9 @@ export const login = {
       enableChromeSeamlessSso,
       profile.azure_default_remember_me,
       noDisableExtensions,
-      disableGpu
+      disableGpu,
+      effectiveBrowser,
+      effectiveBrowserProfile
     );
     const roles = this._parseRolesFromSamlResponse(samlResponse);
     const { role, durationHours } = await this._askUserForRoleAndDurationAsync(
@@ -582,7 +695,9 @@ export const login = {
     enableChromeSeamlessSso: boolean,
     forceRefresh: boolean,
     noDisableExtensions: boolean,
-    disableGpu: boolean
+    disableGpu: boolean,
+    browser: BrowserChoice = "auto",
+    browserProfile?: string
   ): Promise<void> {
     const profiles = await awsConfig.getAllProfileNames();
 
@@ -610,7 +725,9 @@ export const login = {
         awsNoVerifySsl,
         enableChromeSeamlessSso,
         noDisableExtensions,
-        disableGpu
+        disableGpu,
+        browser,
+        browserProfile
       );
     }
   },
@@ -737,6 +854,8 @@ export const login = {
    * @param {bool} [rememberMe] - Enable remembering the session
    * @param {bool} [noDisableExtensions] - True to prevent Puppeteer from disabling Chromium extensions
    * @param {bool} [disableGpu] - Disables GPU Acceleration
+   * @param {BrowserChoice} [browserChoice] - Preferred browser to launch ("auto", "chrome", "edge")
+   * @param {string} [browserProfilePath] - Path to the browser's User Data directory to reuse the user's real session
    * @returns {Promise.<string>} The SAML response.
    * @private
    */
@@ -752,11 +871,14 @@ export const login = {
     enableChromeSeamlessSso: boolean,
     rememberMe: boolean,
     noDisableExtensions: boolean,
-    disableGpu: boolean
+    disableGpu: boolean,
+    browserChoice: BrowserChoice = "auto",
+    browserProfilePath?: string
   ): Promise<string> {
     debug("Loading login page in Chrome");
 
     let browser: Browser | undefined;
+    let tempUserDataDir: string | undefined;
 
     try {
       const args = headless
@@ -770,9 +892,20 @@ export const login = {
           `--auth-server-whitelist=${AZURE_AD_SSO}`,
           `--auth-negotiate-delegate-whitelist=${AZURE_AD_SSO}`
         );
-      if (rememberMe) {
+      let userDataDir: string | undefined;
+      if (browserProfilePath) {
+        userDataDir = resolveBrowserProfilePath(browserProfilePath);
+        console.warn(
+          "\n⚠️  Using your real browser profile via --browser-profile.\n" +
+            `   Make sure the browser is fully closed (profile lock).\n` +
+            `   Path: ${userDataDir}\n`
+        );
+      } else if (rememberMe) {
         await mkdirp(paths.chromium);
-        args.push(`--user-data-dir=${paths.chromium}`);
+        userDataDir = paths.chromium;
+      }
+      if (userDataDir) {
+        args.push(`--user-data-dir=${userDataDir}`);
       }
 
       if (process.env.https_proxy) {
@@ -787,12 +920,42 @@ export const login = {
         args.push("--disable-gpu");
       }
 
-      browser = await puppeteer.launch({
-        executablePath: resolveChromiumPath(),
-        headless,
-        args,
-        ignoreDefaultArgs,
-      });
+      const executablePath = resolveChromiumPath(browserChoice);
+      debug(`Launching browser: ${executablePath}`);
+
+      try {
+        browser = await puppeteer.launch({
+          executablePath,
+          headless,
+          args,
+          ignoreDefaultArgs,
+        });
+      } catch (err) {
+        debug(
+          `puppeteer.launch failed: ${
+            err instanceof Error ? err.message : "unknown error"
+          }`
+        );
+
+        let attachDir = userDataDir;
+        if (!attachDir) {
+          attachDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "aws-azure-login-")
+          );
+          tempUserDataDir = attachDir;
+          args.push(`--user-data-dir=${attachDir}`);
+        }
+
+        console.warn(
+          "\n⚠️  Could not start the browser the usual way; attaching over its DevTools port instead.\n"
+        );
+        browser = await spawnAndConnectAsync(
+          executablePath,
+          headless,
+          args,
+          attachDir
+        );
+      }
 
       // Wait for a bit as sometimes the browser isn't ready.
       await Bluebird.delay(200);
@@ -909,10 +1072,25 @@ export const login = {
           } else {
             debug("State not recognized!");
             if (totalUnrecognizedDelay > MAX_UNRECOGNIZED_PAGE_DELAY) {
-              const path = "aws-azure-login-unrecognized-state.png";
-              await page.screenshot({ path });
+              // The screenshot is of the live login page, so it can contain the
+              // username, the tenant name or an MFA code. Keep it out of the
+              // working directory and owner-readable only.
+              const screenshotPath = path.join(
+                os.tmpdir(),
+                `aws-azure-login-unrecognized-state-${Date.now()}.png`
+              );
+              await page.screenshot({ path: screenshotPath });
+              try {
+                await fs.promises.chmod(screenshotPath, 0o600);
+              } catch (err) {
+                debug(
+                  `Unable to chmod screenshot: ${
+                    err instanceof Error ? err.message : "unknown error"
+                  }`
+                );
+              }
               throw new CLIError(
-                `Unable to recognize page state! A screenshot has been dumped to ${path}. If this problem persists, try running with --mode=gui or --mode=debug`
+                `Unable to recognize page state! A screenshot has been dumped to ${screenshotPath}. It may show your username, tenant or an MFA code, so delete it once you are done. If this problem persists, try running with --mode=gui or --mode=debug`
               );
             }
 
@@ -931,7 +1109,7 @@ export const login = {
 
       const samlResponse = querystring.parse(samlResponseData).SAMLResponse;
 
-      debug("Found SAML response", samlResponse);
+      debug("Found SAML response (contents redacted)");
 
       if (!samlResponse) {
         throw new Error("SAML response not found");
@@ -943,6 +1121,28 @@ export const login = {
     } finally {
       if (browser) {
         await browser.close();
+      }
+      if (tempUserDataDir) {
+        // browser.close() returns before the process has fully released the
+        // profile, so the first unlink usually fails with EPERM on Windows.
+        // The directory holds session cookies, so it is worth retrying.
+        let lastErr: unknown;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            fs.rmSync(tempUserDataDir, { recursive: true, force: true });
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            await Bluebird.delay(500);
+          }
+        }
+        if (lastErr) {
+          console.warn(
+            `\n⚠️  Could not remove the temporary browser profile at ${tempUserDataDir}.\n` +
+              "   It may still hold session cookies — delete it when convenient.\n"
+          );
+        }
       }
     }
   },
@@ -956,7 +1156,9 @@ export const login = {
   _parseRolesFromSamlResponse(assertion: string): Role[] {
     debug("Converting assertion from base64 to ASCII");
     const samlText = Buffer.from(assertion, "base64").toString("ascii");
-    debug("Converted", samlText);
+    debug(
+      `Converted assertion to XML (${samlText.length} chars, contents redacted)`
+    );
 
     debug("Parsing SAML XML");
     const saml = load(samlText, { xmlMode: true });
@@ -1085,10 +1287,11 @@ export const login = {
     console.log(`Assuming role ${role.roleArn} in region ${region}...`);
     let stsOptions: STSClientConfig = {};
     if (process.env.https_proxy) {
+      const proxyUrl = process.env.https_proxy;
       stsOptions = {
         ...stsOptions,
         requestHandler: new NodeHttpHandler({
-          httpsAgent: proxy(process.env.https_proxy),
+          httpsAgent: new ProxyAgent({ getProxyForUrl: () => proxyUrl }),
         }),
       };
     }

@@ -5,7 +5,7 @@ process.on("SIGTERM", () => process.exit(1));
 
 import { Command } from "commander";
 import { configureProfileAsync } from "./configureProfileAsync";
-import { login } from "./login";
+import { login, BrowserChoice } from "./login";
 
 const program = new Command();
 
@@ -30,8 +30,7 @@ program
   )
   .option(
     "--no-prompt",
-    "Do not prompt for input and accept the default choice",
-    false
+    "Do not prompt for input and accept the default choice"
   )
   .option(
     "--enable-chrome-network-service",
@@ -52,6 +51,14 @@ program
   .option(
     "--disable-gpu",
     "Tell Puppeteer to pass the --disable-gpu flag to Chromium"
+  )
+  .option(
+    "-b, --browser <browser>",
+    "Which browser to launch: 'auto' (default), 'chrome', or 'edge'. On Windows joined to Azure AD, Edge can sign you in automatically via PRT."
+  )
+  .option(
+    "--browser-profile <path>",
+    "Absolute path to a browser User Data directory to reuse an existing session (e.g. on Windows: %LOCALAPPDATA%\\Microsoft\\Edge\\User Data). The browser must be fully closed."
   )
   .parse(process.argv);
 
@@ -87,6 +94,16 @@ const forceRefresh = !!options.forceRefresh;
 const noDisableExtensions = !options.disableExtensions;
 const disableGpu = !!options.disableGpu;
 
+const browserRaw = (options.browser as string | undefined)?.toLowerCase();
+if (browserRaw && !["auto", "chrome", "edge"].includes(browserRaw)) {
+  console.error(
+    `Invalid --browser value "${browserRaw}". Use one of: auto, chrome, edge.`
+  );
+  process.exit(2);
+}
+const browser: BrowserChoice = (browserRaw as BrowserChoice) || "auto";
+const browserProfile = options.browserProfile as string | undefined;
+
 Promise.resolve()
   .then(() => {
     if (options.allProfiles) {
@@ -99,7 +116,9 @@ Promise.resolve()
         enableChromeSeamlessSso,
         forceRefresh,
         noDisableExtensions,
-        disableGpu
+        disableGpu,
+        browser,
+        browserProfile
       );
     }
 
@@ -113,7 +132,9 @@ Promise.resolve()
       awsNoVerifySsl,
       enableChromeSeamlessSso,
       noDisableExtensions,
-      disableGpu
+      disableGpu,
+      browser,
+      browserProfile
     );
   })
   .catch((err: Error) => {
