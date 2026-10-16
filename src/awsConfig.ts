@@ -8,6 +8,7 @@ import util from "util";
 const debug = _debug("aws-azure-login");
 
 const writeFile = util.promisify(fs.writeFile);
+const chmod = util.promisify(fs.chmod);
 
 // Autorefresh credential time limit in milliseconds
 const refreshLimitInMs = 11 * 60 * 1000;
@@ -167,5 +168,18 @@ export const awsConfig = {
 
     debug(`Writing '${type}' INI to file '${paths[type]}'`);
     await writeFile(paths[type], text, { mode: 0o600 });
+
+    // writeFile's `mode` is only honoured when the file is created, so a
+    // pre-existing world-readable file (e.g. one the AWS CLI wrote with 0644)
+    // would keep its permissions. Re-apply them explicitly. No-op on Windows.
+    try {
+      await chmod(paths[type], 0o600);
+    } catch (err) {
+      debug(
+        `Unable to restrict permissions on '${paths[type]}': ${
+          err instanceof Error ? err.message : "unknown error"
+        }`
+      );
+    }
   },
 };

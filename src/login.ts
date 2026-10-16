@@ -18,6 +18,7 @@ import { Agent } from "https";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
 import fs from "fs";
 import path from "path";
+import os from "os";
 
 const debug = _debug("aws-azure-login");
 
@@ -981,10 +982,25 @@ export const login = {
           } else {
             debug("State not recognized!");
             if (totalUnrecognizedDelay > MAX_UNRECOGNIZED_PAGE_DELAY) {
-              const path = "aws-azure-login-unrecognized-state.png";
-              await page.screenshot({ path });
+              // The screenshot is of the live login page, so it can contain the
+              // username, the tenant name or an MFA code. Keep it out of the
+              // working directory and owner-readable only.
+              const screenshotPath = path.join(
+                os.tmpdir(),
+                `aws-azure-login-unrecognized-state-${Date.now()}.png`
+              );
+              await page.screenshot({ path: screenshotPath });
+              try {
+                await fs.promises.chmod(screenshotPath, 0o600);
+              } catch (err) {
+                debug(
+                  `Unable to chmod screenshot: ${
+                    err instanceof Error ? err.message : "unknown error"
+                  }`
+                );
+              }
               throw new CLIError(
-                `Unable to recognize page state! A screenshot has been dumped to ${path}. If this problem persists, try running with --mode=gui or --mode=debug`
+                `Unable to recognize page state! A screenshot has been dumped to ${screenshotPath}. It may show your username, tenant or an MFA code, so delete it once you are done. If this problem persists, try running with --mode=gui or --mode=debug`
               );
             }
 
@@ -1003,7 +1019,7 @@ export const login = {
 
       const samlResponse = querystring.parse(samlResponseData).SAMLResponse;
 
-      debug("Found SAML response", samlResponse);
+      debug("Found SAML response (contents redacted)");
 
       if (!samlResponse) {
         throw new Error("SAML response not found");
@@ -1028,7 +1044,9 @@ export const login = {
   _parseRolesFromSamlResponse(assertion: string): Role[] {
     debug("Converting assertion from base64 to ASCII");
     const samlText = Buffer.from(assertion, "base64").toString("ascii");
-    debug("Converted", samlText);
+    debug(
+      `Converted assertion to XML (${samlText.length} chars, contents redacted)`
+    );
 
     debug("Parsing SAML XML");
     const saml = load(samlText, { xmlMode: true });
