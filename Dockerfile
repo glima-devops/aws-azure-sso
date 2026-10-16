@@ -1,52 +1,29 @@
-FROM node:14-slim
+FROM node:20-bookworm-slim
 
-# Install Puppeteer dependencies: https://github.com/GoogleChrome/puppeteer/blob/master/docs/troubleshooting.md#chrome-headless-doesnt-launch
+# This fork uses puppeteer-core, which never downloads a browser. The image has
+# to provide one itself, along with the Chromium runtime libraries.
 RUN apt-get update \
-   && apt-get install -y \
+   && apt-get install -y --no-install-recommends \
+   chromium \
    ca-certificates \
    fonts-liberation \
-   libasound2 \
-   libatk-bridge2.0-0 \
-   libatk1.0-0 \
-   libc6 \
-   libcairo2 \
-   libcups2 \
-   libdbus-1-3 \
-   libexpat1 \
-   libfontconfig1 \
-   libgbm1 \
-   libgcc1 \
-   libglib2.0-0 \
-   libgtk-3-0 \
-   libnspr4 \
-   libnss3 \
-   libpango-1.0-0 \
-   libpangocairo-1.0-0 \
-   libstdc++6 \
-   libx11-6 \
-   libx11-xcb1 \
-   libxcb1 \
-   libxcomposite1 \
-   libxcursor1 \
-   libxdamage1 \
-   libxext6 \
-   libxfixes3 \
-   libxi6 \
-   libxrandr2 \
-   libxrender1 \
-   libxss1 \
-   libxtst6 \
-   lsb-release \
-   wget \
-   xdg-utils \
    && apt-get -q -y clean \
    && rm -rf /var/cache/apt/archives/* /var/lib/apt/lists/*
 
-COPY package.json yarn.lock /aws-azure-login/
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-RUN cd /aws-azure-login \
-   && yarn install --production
+WORKDIR /aws-azure-login
 
-COPY lib /aws-azure-login/lib
+COPY package.json package-lock.json ./
+
+RUN npm ci --omit=dev \
+   && npm cache clean --force
+
+COPY lib ./lib
+
+# Chromium's sandbox needs privileges this container does not have, hence the
+# --no-sandbox below; dropping root limits what that exposes.
+RUN chown -R node:node /aws-azure-login
+USER node
 
 ENTRYPOINT ["node", "/aws-azure-login/lib", "--no-sandbox"]

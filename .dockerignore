@@ -1,1 +1,8 @@
 node_modules
+.git
+.github
+src
+typings
+lib-cov
+coverage
+*.log
